@@ -40,7 +40,8 @@ from general_robotics_toolbox import ros_tf as tf
 from geometry_msgs.msg import Pose
 import rpi_abb_irc5.ros.rapid_commander as rapid_node_pkg
 import safe_kinematic_controller.ros.commander as controller_commander_pkg
-from rpi_arm_composites_manufacturing_process.msg import ProcessState, ProcessStepFeedback, PlacementStepAction, PlacementStepGoal, PlacementCommand
+from rpi_arm_composites_manufacturing_process.msg import ProcessState, ProcessStepFeedback
+from ivbs_object_placement PlacementStepAction, PlacementStepGoal, PlacementCommand
 from object_recognition_msgs.msg import ObjectRecognitionAction, ObjectRecognitionGoal
 
 from industrial_payload_manager.payload_transform_listener import PayloadTransformListener
