@@ -31,22 +31,26 @@ import copy
 import rospy
 import actionlib
 import rospkg
+import cv2
+import cv2.aruco as aruco
 import general_robotics_toolbox as rox
 import general_robotics_toolbox.urdf as urdf
 import general_robotics_toolbox.ros_msg as rox_msg
 from general_robotics_toolbox import ros_tf as tf
-
+from geometry_msgs.msg import Pose
 import rpi_abb_irc5.ros.rapid_commander as rapid_node_pkg
 import safe_kinematic_controller.ros.commander as controller_commander_pkg
-from rpi_arm_composites_manufacturing_process.msg import ProcessState, ProcessStepFeedback
+from rpi_arm_composites_manufacturing_process.msg import ProcessState, ProcessStepFeedback, PlacementStepAction, PlacementStepGoal, PlacementCommand
 from object_recognition_msgs.msg import ObjectRecognitionAction, ObjectRecognitionGoal
 
 from industrial_payload_manager.payload_transform_listener import PayloadTransformListener
 from industrial_payload_manager.srv import UpdatePayloadPose, UpdatePayloadPoseRequest, \
     GetPayloadArray, GetPayloadArrayRequest
+from industrial_payload_manager.msg import ArucoGridboard
 import time
 import sys
 from moveit_msgs.msg import ExecuteTrajectoryAction, ExecuteTrajectoryGoal, MoveItErrorCodes
+from 
 import os
 
 import threading
@@ -88,13 +92,17 @@ class ProcessController(object):
         self.tf_listener=PayloadTransformListener()
         self._process_state_pub = rospy.Publisher("process_state", ProcessState, queue_size=100, latch=True)
         self.publish_process_state()
-
+        self.placementclient=actionlib.ActionClient('placement_step', PlacementStepAction)
+        self.client.wait_for_server()
+        self.client_handle=None
+        
         self.update_payload_pose_srv=rospy.ServiceProxy("update_payload_pose", UpdatePayloadPose)
         self.get_payload_array_srv=rospy.ServiceProxy("get_payload_array", GetPayloadArray)
         self.goal_handle=None
         self.subprocess_handle=None
         self.plan_dictionary={}
         self.process_starts={}
+        self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_ARUCO_ORIGINAL)
         self.process_index=None
         self.process_states=["reset_position","pickup_prepare","pickup_lower","pickup_grab_first_step","pickup_grab_second_step","pickup_raise","transport_payload","place_payload"]
     
@@ -143,6 +151,7 @@ class ProcessController(object):
     def _active_client(self):
         self.state="moving"
         #self.publish_process_state()
+
 
     def _finished_client(self,state,result):
         #if(state== actionlib.GoalStatus.SUCCEEDED):
@@ -532,106 +541,67 @@ class ProcessController(object):
         self.publish_process_state()
 
     def move_place_lower(self):
-        self.controller_commander.set_controller_mode(self.desired_controller_mode, 0.8*self.speed_scalar, [], [])
-        result=None
-        self.state="place_lower"
-        self.controller_commander.async_execute(self.plan_dictionary['place_lower'],result)
-        self.publish_process_state()
-
-    def plan_place_set_first_step(self):
+        placement_command=PlacementCommand()
+        placement_command.cameras_used=1
         
-        #TODO: check change state and target
-
-        rospy.loginfo("Begin place_set for payload %s target %s", self.current_payload, self.current_target)
-
-        panel_target_pose = self.tf_listener.lookupTransform("world", self.current_target, rospy.Time(0))
-        panel_gripper_pose = self.tf_listener.lookupTransform(self.current_payload, "vacuum_gripper_tool", rospy.Time(0))
-        pose_target=panel_target_pose * panel_gripper_pose
-        pose_target2=copy.deepcopy(pose_target)
-        pose_target2.p[2] -= 0.15
-
-
-
-        path=self.controller_commander.compute_cartesian_path(pose_target2, avoid_collisions=False)
-        self.state="plan_place_set_first_step"
-        self.plan_dictionary['place_set_first_step']=path
-        self.publish_process_state()
-
-    def move_place_set_first_step(self):
-        self.controller_commander.set_controller_mode(self.desired_controller_mode, 0.4*self.speed_scalar, [], \
-                                                      self.get_payload_pickup_ft_threshold(self.current_target))
-        result=None
-        self.state="place_set_first_step"
-        self.controller_commander.async_execute(self.plan_dictionary['place_set_first_step'],result)
-        self.rapid_node.set_digital_io("Vacuum_enable", 0)
-        time.sleep(1)
-        self.publish_process_state()
-
-    def plan_place_set_second_step(self):
-
-        #TODO: check vacuum feedback to make sure we have the panel
-
-        gripper_to_panel_tf=self.tf_listener.lookupTransform("vacuum_gripper_tool", self.current_payload, rospy.Time(0))
-        world_to_gripper_tf=self.tf_listener.lookupTransform("world", "vacuum_gripper_tool", rospy.Time(0))
-        world_to_panel_nest_tf=self.tf_listener.lookupTransform("world", "panel_nest", rospy.Time(0))
-        panel_to_nest_tf=world_to_panel_nest_tf.inv()*world_to_gripper_tf*gripper_to_panel_tf
-
-        self._update_payload_pose(self.current_payload, panel_to_nest_tf, "panel_nest", 0.5)
-
-        self.current_payload=None
-        self.current_target=None
-        '''
-        time.sleep(1)
-
-        pose_target2=copy.deepcopy(pose_target)
-        pose_target2.p[2] += 0.15
-
-
-        path=self.controller_commander.compute_cartesian_path(pose_target2, avoid_collisions=False)
-
-
-        self.plan_dictionary['place_set_second_step']=path
-        rospy.loginfo("Finish place_set for payload %s", self.current_target)
-        '''
-        self.state="plan_place_set_second_step"
-        self.publish_process_state()
-
-    def move_place_set_second_step(self):
-        self.controller_commander.set_controller_mode(self.desired_controller_mode, 0.4*self.speed_scalar, [], [])
-        result=None
-        self.state="place_set_second_step"
-        self.controller_commander.async_execute(self.plan_dictionary['place_set_second_step'],result)
-        self.publish_process_state()
-
-
+        placement_command.F_d_set1=-200
+        placement_command.F_d_set2=-360
+        placement_command.Kc=0.00025
+        placement_command.IBVSdt=0.1
+        placement_command.du_converge_th= 3
+        placement_command.dv_converge_th=3
+        placement_command.iteration_limit=70
+        placement_command.Ki=1.0
+        placement_command.step_size_min=100000
         
-    def plan_place_raise(self):
+        placement_goal=PlacementStepGoal()
         
-        #TODO: check change state and target
         
-        rospy.loginfo("Begin place_raise for payload %s", self.current_payload)
+        if(self.current_payload=="leeward_mid_panel"):
+            placement_command.rvec_difference_stage1=loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_Above_Nest.mat')['rvec_difference']
+            placement_command.tvec_difference_stage1= loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_Above_Nest.mat')['tvec_difference']
+            placement_command.rvec_difference_stage2= loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['rvec_difference']
+            placement_command.tvec_difference_stage2== loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['tvec_difference']
+            placement_command.point_difference_stage2=loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['object_points_ground_in_panel_tag_system']    
+            initial_place=Pose()
+            initial_place.position.x=2.15484
+            initial_place.position.y=1.21372
+            initial_place.position.z=0.25766
+            initial_place.orientation.w=0.02110
+            initial_place.orientation.x= -0.03317
+            initial_place.orientation.y= 0.99922
+            initial_place.orientation.z=-0.00468
+            placement_command.initial=initial_place
+            
+            placement_goal.camera1ground=ArucoGridboard(4,4,0.04,0.075,self.aruco_dict,32)
+            placement_goal.camera1place=ArucoGridboard(8,3,0.025,0.075,self.aruco_dict,80)
+            
+        elif(self.current_payload=="leeward_tip_panel"):
+            placement_command.rvec_difference_stage1=loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_Offset_In_Nest.mat')['rvec_difference']
+            placement_command.tvec_difference_stage1= loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_Offset_In_Nest.mat')['tvec_difference']
+            placement_command.rvec_difference_stage2= loadmat('/home/rpi-cats/Desktop/YC/Placement Calibration/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['rvec_difference']
+            placement_command.tvec_difference_stage2== loadmat('/home/rpi-cats/Desktop/YC/Placement Calibration/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['tvec_difference']
+            placement_command.point_difference_stage2=loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['object_points_ground_in_panel_tag_system']    
+            initial_place=Pose()
+            initial_place.position.x=2.15484
+            initial_place.position.y=1.21372
+            initial_place.position.z=0.25766
+            initial_place.orientation.w=0.02110
+            initial_place.orientation.x= -0.03317
+            initial_place.orientation.y= 0.99922
+            initial_place.orientation.z=-0.00468
+            placement_command.initial=initial_place
+            placement_goal.camera1ground=ArucoGridboard(4,4,0.04,0.075,self.aruco_dict,16)
+            placement_goal.camera1place=ArucoGridboard(8,3,0.025,0.075,self.aruco_dict,50)
         
-        #Just use gripper position for now, think up a better way in future
-        object_target=self.tf_listener.lookupTransform("world", "vacuum_gripper_tool", rospy.Time(0))
-        pose_target2=copy.deepcopy(object_target)
-        pose_target2.p[2] += 0.5
+        placement_goal.data=placement_command
+        self.client_handle=self.placementclient.send_goal(placement_goal,feedback_cb=self._finished_client)
+        
+            
+        
         
 
-        path=self.controller_commander.compute_cartesian_path(pose_target2, avoid_collisions=False)
-
-
-       
-        self.state="plan_place_raise"
-        self.plan_dictionary['place_raise']=path
-        rospy.loginfo("Finish place_raise for payload %s", self.current_target)
-        self.publish_process_state()
-
-    def move_place_raise(self):
-        self.controller_commander.set_controller_mode(self.desired_controller_mode, 0.8*self.speed_scalar, [], [])
-        result=None
-        self.state="place_raise"
-        self.controller_commander.async_execute(self.plan_dictionary['place_raise'],result)
-        self.publish_process_state()
+    
 
     def _fill_process_state(self):
         s=ProcessState()
