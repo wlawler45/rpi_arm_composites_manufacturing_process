@@ -37,11 +37,11 @@ import general_robotics_toolbox as rox
 import general_robotics_toolbox.urdf as urdf
 import general_robotics_toolbox.ros_msg as rox_msg
 from general_robotics_toolbox import ros_tf as tf
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, Point, Vector3
 import rpi_abb_irc5.ros.rapid_commander as rapid_node_pkg
 import safe_kinematic_controller.ros.commander as controller_commander_pkg
 from rpi_arm_composites_manufacturing_process.msg import ProcessState, ProcessStepFeedback
-from ivbs_object_placement PlacementStepAction, PlacementStepGoal, PlacementCommand
+from ivbs_object_placement.msg PlacementStepAction, PlacementStepGoal, PlacementCommand, IBVSParameters, ComplianceControlParameters
 from object_recognition_msgs.msg import ObjectRecognitionAction, ObjectRecognitionGoal
 
 from industrial_payload_manager.payload_transform_listener import PayloadTransformListener
@@ -51,9 +51,9 @@ from industrial_payload_manager.msg import ArucoGridboard
 import time
 import sys
 from moveit_msgs.msg import ExecuteTrajectoryAction, ExecuteTrajectoryGoal, MoveItErrorCodes
-from 
-import os
 
+import os
+from scipy.io import loadmat
 import threading
 from moveit_commander import PlanningSceneInterface
 import traceback
@@ -94,7 +94,7 @@ class ProcessController(object):
         self._process_state_pub = rospy.Publisher("process_state", ProcessState, queue_size=100, latch=True)
         self.publish_process_state()
         self.placementclient=actionlib.ActionClient('placement_step', PlacementStepAction)
-        self.client.wait_for_server()
+        self.placementclient.wait_for_server()
         self.client_handle=None
         
         self.update_payload_pose_srv=rospy.ServiceProxy("update_payload_pose", UpdatePayloadPose)
@@ -229,7 +229,7 @@ class ProcessController(object):
     	self.publish_process_state()
     	
     def place_panel(self, target_payload):
-        self.state="place_panel"
+        """self.state="place_panel"
         self.process_index=7
         self.process_starts[self.process_states[self.process_index]]=self.get_current_pose()
         self.current_target=target_payload
@@ -239,7 +239,9 @@ class ProcessController(object):
             subprocess_handle=subprocess.Popen(['python', self.YC_place_code2])
         subprocess_handle.wait()
         ret_code=subprocess_handle.returncode
-        self.publish_process_state()
+        self.publish_process_state()"""
+        self.current_payload=target_payload
+        self.move_place_lower()
     	
     def plan_pickup_prepare(self, target_payload):
         
@@ -541,29 +543,50 @@ class ProcessController(object):
         rospy.loginfo("Finish place_lower for payload %s to %s", self.current_payload, self.current_target)
         self.publish_process_state()
 
+
     def move_place_lower(self):
         placement_command=PlacementCommand()
-        placement_command.cameras_used=1
+        compliance_control=ComplianceControlParameters()
+        ibvs_params=IBVSParameters()
+        placement_command.cameras_used=["gripper_camera_2"]
         
-        placement_command.F_d_set1=-200
-        placement_command.F_d_set2=-360
-        placement_command.Kc=0.00025
-        placement_command.IBVSdt=0.1
-        placement_command.du_converge_th= 3
-        placement_command.dv_converge_th=3
-        placement_command.iteration_limit=70
-        placement_command.Ki=1.0
-        placement_command.step_size_min=100000
-        
+        compliance_control.F_d_set1=-200
+        compliance_control.F_d_set2=-360
+        compliance_control.Kc=0.00025
+        placement_command.compliance_control_parameters=compliance_control
+        ibvs_params.IBVSdt=0.1
+        ibvs_params.du_converge_th= 3
+        ibvs_params.dv_converge_th=3
+        ibvs_params.iteration_limit=70
+        ibvs_params.Ki=1.0
+        ibvs_params.step_size_min=100000
+        placement_command.ibvs_parameters=ibvs_params
         placement_goal=PlacementStepGoal()
-        
+        def wrap_vector3(self,data):
+            vector=Vector3()
+            vector.x=data[0]
+            vector.y=data[1]
+            vector.z=data[2]
+            return vector
+            
+            
+        def wrap_points(self,point_diff):
+            point_array=[]
+            num_points=point_diff.shape[1]
+            for(i in range(num_points)):
+                point=Point()
+                point.x=point_diff[0][i]
+                point.y=point_diff[1][i]
+                point.z=point_diff[2][i]
+                point_array.append(point)
+            return point_array
         
         if(self.current_payload=="leeward_mid_panel"):
-            placement_command.rvec_difference_stage1=loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_Above_Nest.mat')['rvec_difference']
-            placement_command.tvec_difference_stage1= loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_Above_Nest.mat')['tvec_difference']
-            placement_command.rvec_difference_stage2= loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['rvec_difference']
-            placement_command.tvec_difference_stage2== loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['tvec_difference']
-            placement_command.point_difference_stage2=loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['object_points_ground_in_panel_tag_system']    
+            placement_command.rvec_difference_stage1=wrap_vector3(loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_Above_Nest.mat')['rvec_difference'])
+            placement_command.tvec_difference_stage1=wrap_vector3( loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_Above_Nest.mat')['tvec_difference'])
+            placement_command.rvec_difference_stage2=wrap_vector3(loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['rvec_difference'])
+            placement_command.tvec_difference_stage2=wrap_vector3( loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['tvec_difference'])
+            placement_command.point_difference_stage2=wrap_points(loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['object_points_ground_in_panel_tag_system'])
             initial_place=Pose()
             initial_place.position.x=2.15484
             initial_place.position.y=1.21372
@@ -578,11 +601,11 @@ class ProcessController(object):
             placement_goal.camera1place=ArucoGridboard(8,3,0.025,0.075,self.aruco_dict,80)
             
         elif(self.current_payload=="leeward_tip_panel"):
-            placement_command.rvec_difference_stage1=loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_Offset_In_Nest.mat')['rvec_difference']
-            placement_command.tvec_difference_stage1= loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_Offset_In_Nest.mat')['tvec_difference']
-            placement_command.rvec_difference_stage2= loadmat('/home/rpi-cats/Desktop/YC/Placement Calibration/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['rvec_difference']
-            placement_command.tvec_difference_stage2== loadmat('/home/rpi-cats/Desktop/YC/Placement Calibration/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['tvec_difference']
-            placement_command.point_difference_stage2=loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['object_points_ground_in_panel_tag_system']    
+            placement_command.rvec_difference_stage1=wrap_vector3(loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_Offset_In_Nest.mat')['rvec_difference'])
+            placement_command.tvec_difference_stage1=wrap_vector3(loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_Offset_In_Nest.mat')['tvec_difference'])
+            placement_command.rvec_difference_stage2=wrap_vector3( loadmat('/home/rpi-cats/Desktop/YC/Placement Calibration/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['rvec_difference'])
+            placement_command.tvec_difference_stage2=wrap_vector3(loadmat('/home/rpi-cats/Desktop/YC/Placement Calibration/Panel2_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['tvec_difference'])
+            placement_command.point_difference_stage2=wrap_points(loadmat('/home/rpi-cats/Desktop/DJ/Ideal Position/Panel1_Cam_636_object_points_ground_tag_in_panel_frame_In_Nest.mat')['object_points_ground_in_panel_tag_system'])
             initial_place=Pose()
             initial_place.position.x=2.15484
             initial_place.position.y=1.21372
